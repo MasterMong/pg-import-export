@@ -7,6 +7,8 @@ from datetime import datetime
 import json
 import re
 from tkinter import ttk, StringVar
+import keyring
+import base64
 
 
 class DatabaseSelectDialog:
@@ -112,6 +114,7 @@ class PostgresGUI:
         self.profiles_file = "db_profiles.json"
         self.profiles = self.load_profiles()
         self.current_profile = None
+        self.keyring_service = "pg_import_export"
 
         # Create frames
         self.create_profile_frame(main_container)
@@ -196,10 +199,18 @@ class PostgresGUI:
                     command=self.select_database
                 ).grid(row=i, column=2, padx=5, pady=2)
 
+        # Add "Save Password" checkbox
+        self.save_password_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            connection_frame,
+            text="Save Password",
+            variable=self.save_password_var
+        ).grid(row=len(labels), column=0, columnspan=2, sticky="w")
+
         # Test connection button
         ttk.Button(
             connection_frame, text="Test Connection", command=self.test_connection
-        ).grid(row=len(labels), column=0, columnspan=3, pady=10)
+        ).grid(row=len(labels)+1, column=0, columnspan=3, pady=10)
 
         connection_frame.columnconfigure(1, weight=1)
 
@@ -300,7 +311,17 @@ class PostgresGUI:
             "port": self.connection_entries["port"].get(),
             "username": self.connection_entries["username"].get(),
             "database": self.connection_entries["database"].get(),
+            "has_saved_password": False
         }
+
+        # Save password if checkbox is checked
+        if self.save_password_var.get():
+            password = self.connection_entries["password"].get()
+            if password:
+                # Create a unique key for this profile's password
+                password_key = f"{name}_{profile_data['username']}"
+                keyring.set_password(self.keyring_service, password_key, password)
+                profile_data["has_saved_password"] = True
 
         self.profiles[name] = profile_data
         self.save_profiles()
@@ -323,8 +344,20 @@ class PostgresGUI:
         self.connection_entries["database"].delete(0, tk.END)
         self.connection_entries["database"].insert(0, profile["database"])
 
-        # Clear password for security
+        # Clear password entry
         self.connection_entries["password"].delete(0, tk.END)
+
+        # Load saved password if it exists
+        if profile.get("has_saved_password", False):
+            password_key = f"{name}_{profile['username']}"
+            saved_password = keyring.get_password(self.keyring_service, password_key)
+            if saved_password:
+                self.connection_entries["password"].insert(0, saved_password)
+                self.save_password_var.set(True)
+            else:
+                self.save_password_var.set(False)
+        else:
+            self.save_password_var.set(False)
 
     def delete_profile(self):
         name = self.profile_var.get()
@@ -335,6 +368,16 @@ class PostgresGUI:
         if messagebox.askyesno(
             "Confirm Delete", f"Are you sure you want to delete profile '{name}'?"
         ):
+            # Delete saved password if it exists
+            profile = self.profiles[name]
+            if profile.get("has_saved_password", False):
+                password_key = f"{name}_{profile['username']}"
+                try:
+                    keyring.delete_password(self.keyring_service, password_key)
+                except:
+                    pass  # Ignore errors when deleting password
+
+            # Delete profile and update UI
             del self.profiles[name]
             self.save_profiles()
             self.profile_combo["values"] = list(self.profiles.keys())
@@ -346,6 +389,7 @@ class PostgresGUI:
                 self.profile_var.set("")
                 for entry in self.connection_entries.values():
                     entry.delete(0, tk.END)
+                self.save_password_var.set(False)
 
     def validate_port(self, value):
         if not value:
