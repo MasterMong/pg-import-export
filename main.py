@@ -9,6 +9,81 @@ import re
 from tkinter import ttk, StringVar
 
 
+class DatabaseSelectDialog:
+    def __init__(self, parent, connection_info):
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Select Database")
+        self.dialog.geometry("300x400")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        self.connection_info = connection_info
+        self.selected_db = None
+        
+        # Create UI elements
+        ttk.Label(self.dialog, text="Available Databases:").pack(pady=5)
+        
+        # Create listbox with scrollbar
+        frame = ttk.Frame(self.dialog)
+        frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.listbox = tk.Listbox(frame)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=scrollbar.set)
+        
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Buttons
+        btn_frame = ttk.Frame(self.dialog)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="Select", command=self.on_select).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side=tk.RIGHT, padx=5)
+        
+        # Load databases
+        self.load_databases()
+        
+        # Center dialog
+        self.dialog.update_idletasks()
+        width = self.dialog.winfo_width()
+        height = self.dialog.winfo_height()
+        x = (self.dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (height // 2)
+        self.dialog.geometry(f'{width}x{height}+{x}+{y}')
+        
+    def load_databases(self):
+        try:
+            env = os.environ.copy()
+            env["PGPASSWORD"] = self.connection_info["password"]
+            
+            result = subprocess.run([
+                "psql",
+                "-h", self.connection_info["host"],
+                "-p", self.connection_info["port"],
+                "-U", self.connection_info["username"],
+                "-d", "postgres",
+                "-t", "-A",
+                "-c", "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;"
+            ], env=env, check=True, capture_output=True, text=True)
+            
+            databases = [db.strip() for db in result.stdout.split('\n') if db.strip()]
+            for db in databases:
+                self.listbox.insert(tk.END, db)
+                
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"Failed to fetch databases:\n{e.stderr}")
+            self.dialog.destroy()
+            
+    def on_select(self):
+        if self.listbox.curselection():
+            self.selected_db = self.listbox.get(self.listbox.curselection())
+            self.dialog.destroy()
+            
+    def on_cancel(self):
+        self.dialog.destroy()
+
+
 class PostgresGUI:
     def __init__(self, root):
         self.root = root
@@ -112,11 +187,19 @@ class PostgresGUI:
                 entry.configure(show="*")
             entry.grid(row=i, column=1, padx=5, pady=2, sticky="ew")
             self.connection_entries[label.lower().rstrip(":")] = entry
+            
+            # Add database selection button
+            if label == "Database:":
+                ttk.Button(
+                    connection_frame,
+                    text="Select...",
+                    command=self.select_database
+                ).grid(row=i, column=2, padx=5, pady=2)
 
         # Test connection button
         ttk.Button(
             connection_frame, text="Test Connection", command=self.test_connection
-        ).grid(row=len(labels), column=0, columnspan=2, pady=10)
+        ).grid(row=len(labels), column=0, columnspan=3, pady=10)
 
         connection_frame.columnconfigure(1, weight=1)
 
@@ -456,6 +539,35 @@ class PostgresGUI:
                 messagebox.showerror("Error", f"{field.capitalize()} is required!")
                 return False
         return True
+
+    def select_database(self):
+        # First validate connection details
+        host = self.connection_entries["host"].get().strip()
+        port = self.connection_entries["port"].get().strip()
+        username = self.connection_entries["username"].get().strip()
+        password = self.connection_entries["password"].get()
+        
+        if not all([host, port, username, password]):
+            messagebox.showerror(
+                "Error",
+                "Please fill in the host, port, username, and password fields first."
+            )
+            return
+            
+        # Show database selection dialog
+        connection_info = {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password
+        }
+        
+        dialog = DatabaseSelectDialog(self.root, connection_info)
+        self.root.wait_window(dialog.dialog)
+        
+        if dialog.selected_db:
+            self.connection_entries["database"].delete(0, tk.END)
+            self.connection_entries["database"].insert(0, dialog.selected_db)
 
 
 if __name__ == "__main__":
